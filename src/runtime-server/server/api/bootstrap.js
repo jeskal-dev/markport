@@ -33,12 +33,12 @@
  * subsequent stat(path) calls are answered from cache.
  */
 
-const express = require('express');
-const fs = require('fs');
+const express = require("express");
+const fs = require("fs");
 const fsp = fs.promises;
-const path = require('path');
-const zlib = require('zlib');
-const config = require('../config');
+const path = require("path");
+const zlib = require("zlib");
+const config = require("../config");
 
 // ── Server-side bootstrap cache ───────────────────────────────────────────────
 //
@@ -78,8 +78,8 @@ function setProgress(vaultId, update) {
 }
 
 /** Compress a Buffer with both brotli and gzip concurrently. */
-function preCompress(buf) {
-  return Promise.all([
+async function preCompress(buf) {
+  const [br, gz] = await Promise.all([
     new Promise((resolve, reject) =>
       zlib.brotliCompress(
         buf,
@@ -87,10 +87,13 @@ function preCompress(buf) {
         (err, result) => (err ? reject(err) : resolve(result)),
       ),
     ),
-    new Promise((resolve, reject) =>
-      zlib.gzip(buf, { level: 6 }, (err, result) => (err ? reject(err) : resolve(result))),
+    new Promise((resolve_1, reject_1) =>
+      zlib.gzip(buf, { level: 6 }, (err_1, result_1) =>
+        err_1 ? reject_1(err_1) : resolve_1(result_1),
+      ),
     ),
-  ]).then(([br, gz]) => ({ br, gz }));
+  ]);
+  return { br, gz };
 }
 
 const APP_VERSION = config.appVersion;
@@ -105,32 +108,57 @@ const READ_BATCH = 30;
 function buildElectronValues(vaultId, vaultRegistry) {
   const vault = vaultId ? vaultRegistry.get(vaultId) : null;
   return {
-    'vault':          vault ? { id: vaultId, path: VAULT_BASE } : {},
-    'vault-list':     vaultRegistry.list(),
-    'is-dev':         false,
-    'version':        APP_VERSION,
-    'frame':          'hidden',
-    'resources':      '',
-    'file-url':       '',
-    'disable-update': true,
-    'update':         '',
-    'check-update':   false,
-    'insider-build':  false,
-    'cli':            false,
-    'disable-gpu':    false,
-    'is-quitting':    false,
+    vault: vault ? { id: vaultId, path: VAULT_BASE } : {},
+    "vault-list": vaultRegistry.list(),
+    "is-dev": false,
+    version: APP_VERSION,
+    frame: "hidden",
+    resources: "",
+    "file-url": "",
+    "disable-update": true,
+    update: "",
+    "check-update": false,
+    "insider-build": false,
+    cli: false,
+    "disable-gpu": false,
+    "is-quitting": false,
   };
 }
 
 // Text extensions — we fetch and cache the full content of these files.
 const TEXT_EXTENSIONS = new Set([
-  '.md', '.json', '.txt', '.csv',
-  '.css', '.js', '.ts', '.tsx', '.mjs', '.cjs', '.mts', '.cts',
-  '.html', '.xml', '.yaml', '.yml', '.toml', '.ini', '.conf',
-  '.sh', '.bash', '.zsh', '.fish',
-  '.lua', '.py', '.rb', '.rs', '.go',
-  '.tex', '.bib', '.sty',
-  '.svg',
+  ".md",
+  ".json",
+  ".txt",
+  ".csv",
+  ".css",
+  ".js",
+  ".ts",
+  ".tsx",
+  ".mjs",
+  ".cjs",
+  ".mts",
+  ".cts",
+  ".html",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".conf",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".fish",
+  ".lua",
+  ".py",
+  ".rb",
+  ".rs",
+  ".go",
+  ".tex",
+  ".bib",
+  ".sty",
+  ".svg",
 ]);
 
 // Max size (bytes) for any single file we include in the bootstrap.
@@ -140,14 +168,14 @@ const TEXT_EXTENSIONS = new Set([
 // This is module-level mutable so createBootstrapRouter / warmUpBootstrapCache
 // can adjust it per-deployment via the bootstrap config knobs.
 let currentLimits = {
-  maxContentBytes: (config.bootstrap && config.bootstrap.maxFileKB || 500) * 1024,
-  maxTotalBytes:   (config.bootstrap && config.bootstrap.maxTotalMB || 50) * 1024 * 1024,
+  maxContentBytes: (config.bootstrap?.maxFileKB || 500) * 1024,
+  maxTotalBytes: (config.bootstrap?.maxTotalMB || 50) * 1024 * 1024,
 };
 
 function applyLimits(bootCfg) {
   currentLimits = {
     maxContentBytes: (bootCfg.maxFileKB || 500) * 1024,
-    maxTotalBytes:   (bootCfg.maxTotalMB || 50) * 1024 * 1024,
+    maxTotalBytes: (bootCfg.maxTotalMB || 50) * 1024 * 1024,
   };
 }
 
@@ -167,17 +195,28 @@ function isTextFile(filename, size) {
  * Binary files are NOT put in fsCache here.  The client shim will populate
  * fsCache lazily when it serves a readdir answer from dirsCache.
  */
-async function walkDir(dir, root, fsCache, dirsCache, walkHidden = false, progress = null, budget = null) {
+async function walkDir(
+  dir,
+  root,
+  fsCache,
+  dirsCache,
+  walkHidden = false,
+  progress = null,
+  budget = null,
+) {
   let entries;
-  try { entries = await fsp.readdir(dir, { withFileTypes: true }); }
-  catch (_) { return; }
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
 
-  const relDir = path.relative(root, dir).split(path.sep).join('/') || '';
+  const relDir = path.relative(root, dir).split(path.sep).join("/") || "";
 
   // Stat all entries in parallel (needed to populate dirs cache with mtime+size).
   const entryStats = await Promise.all(
     entries.map(async (e) => {
-      if (!walkHidden && e.name.startsWith('.')) return null;
+      if (!walkHidden && e.name.startsWith(".")) return null;
       try {
         const s = await fsp.stat(path.join(dir, e.name));
         return {
@@ -188,7 +227,7 @@ async function walkDir(dir, root, fsCache, dirsCache, walkHidden = false, progre
           mtime: s.mtime.getTime(),
           size: s.size,
         };
-      } catch (_) {
+      } catch {
         return {
           name: e.name,
           isFile: e.isFile(),
@@ -216,12 +255,25 @@ async function walkDir(dir, root, fsCache, dirsCache, walkHidden = false, progre
   for (const e of entryStats) {
     if (!e) continue;
     const abs = path.join(dir, e.name);
-    const rel = path.relative(root, abs).split(path.sep).join('/');
+    const rel = path.relative(root, abs).split(path.sep).join("/");
 
     if (e.isDirectory) {
       // Put directory stat in fs cache so stat(dir) works.
-      fsCache[rel] = { mtime: e.mtime, size: e.size, isFile: false, isDirectory: true };
-      await walkDir(abs, root, fsCache, dirsCache, walkHidden, progress, budget);
+      fsCache[rel] = {
+        mtime: e.mtime,
+        size: e.size,
+        isFile: false,
+        isDirectory: true,
+      };
+      await walkDir(
+        abs,
+        root,
+        fsCache,
+        dirsCache,
+        walkHidden,
+        progress,
+        budget,
+      );
     } else if (isTextFile(e.name, e.size)) {
       // Text file within per-file size limit. Check the global total budget:
       // if there's no room left, mark capped and SKIP this file entirely
@@ -242,12 +294,14 @@ async function walkDir(dir, root, fsCache, dirsCache, walkHidden = false, progre
   // Read text file contents in parallel batches.
   for (let i = 0; i < textFiles.length; i += READ_BATCH) {
     const batch = textFiles.slice(i, i + READ_BATCH);
-    await Promise.all(batch.map(async ({ abs, rel }) => {
-      try {
-        const content = await fsp.readFile(abs, 'utf8');
-        fsCache[rel] = { ...fsCache[rel], content };
-      } catch (_) {}
-    }));
+    await Promise.all(
+      batch.map(async ({ abs, rel }) => {
+        try {
+          const content = await fsp.readFile(abs, "utf8");
+          fsCache[rel] = { ...fsCache[rel], content };
+        } catch (_) {}
+      }),
+    );
     if (progress) {
       progress.filesRead = (progress.filesRead || 0) + batch.length;
       progress.cb();
@@ -271,19 +325,33 @@ async function walkDir(dir, root, fsCache, dirsCache, walkHidden = false, progre
  * Returns the cache entry: { response, dirMtimes, compressed }.
  * This function is used both by the HTTP handler and by the warm-up routine.
  */
-async function buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false) {
+async function buildCacheEntry(
+  vaultId,
+  vaultRoot,
+  vaultRegistry,
+  full = false,
+) {
   // Deduplicate concurrent builds for the same vault+full combination.
-  const buildKey = (vaultId || '') + ':' + (full ? 'full' : 'partial');
+  const buildKey = `${vaultId || ""}:${full ? "full" : "partial"}`;
   if (pendingBuilds.has(buildKey)) {
     return pendingBuilds.get(buildKey);
   }
-  const promise = _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full)
-    .finally(() => pendingBuilds.delete(buildKey));
+  const promise = _buildCacheEntry(
+    vaultId,
+    vaultRoot,
+    vaultRegistry,
+    full,
+  ).finally(() => pendingBuilds.delete(buildKey));
   pendingBuilds.set(buildKey, promise);
   return promise;
 }
 
-async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false) {
+async function _buildCacheEntry(
+  vaultId,
+  vaultRoot,
+  vaultRegistry,
+  full = false,
+) {
   const t0 = Date.now();
 
   // ── Electron IPC values ────────────────────────────────────────────
@@ -296,12 +364,12 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
     await Promise.all(
       Object.entries(cached.dirMtimes).map(async ([relDir, oldMtime]) => {
         const absDir = relDir
-          ? path.join(vaultRoot, relDir.split('/').join(path.sep))
+          ? path.join(vaultRoot, relDir.split("/").join(path.sep))
           : vaultRoot;
         try {
           const s = await fsp.stat(absDir);
           if (s.mtime.getTime() !== oldMtime) changedDirs.push(relDir);
-        } catch (_) {
+        } catch {
           changedDirs.push(relDir); // dir deleted → invalidate
         }
       }),
@@ -309,21 +377,28 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
 
     if (changedDirs.length === 0 && (cached.isFull || !full)) {
       const hitMs = Date.now() - t0;
-      console.log(`[bootstrap] vault=${vaultId.slice(0, 8)}… cache HIT (${hitMs}ms)`);
+      console.log(
+        `[bootstrap] vault=${vaultId.slice(0, 8)}… cache HIT (${hitMs}ms)`,
+      );
       return cached;
     }
 
-    console.log(`[bootstrap] vault=${vaultId.slice(0, 8)}… cache MISS (${changedDirs.length} dirs changed): ${changedDirs.slice(0, 5).join(', ')}`);
+    console.log(
+      `[bootstrap] vault=${vaultId.slice(0, 8)}… cache MISS (${changedDirs.length} dirs changed): ${changedDirs.slice(0, 5).join(", ")}`,
+    );
   }
 
   // ── Progress tracking ───────────────────────────────────────────
   const progress = {
-    dirs: 0, filesRead: 0,
+    dirs: 0,
+    filesRead: 0,
     cb() {
-      const files = Object.keys(fsCache).filter(k => fsCache[k].isFile !== false).length;
+      const files = Object.keys(fsCache).filter(
+        (k) => fsCache[k].isFile !== false,
+      ).length;
       setProgress(vaultId, {
-        state: 'scanning',
-        label: 'Scanning vault...',
+        state: "scanning",
+        label: "Scanning vault...",
         dirs: this.dirs,
         files,
         filesRead: this.filesRead,
@@ -331,7 +406,14 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
       });
     },
   };
-  setProgress(vaultId, { state: 'scanning', label: 'Scanning vault...', dirs: 0, files: 0, filesRead: 0, pct: 0 });
+  setProgress(vaultId, {
+    state: "scanning",
+    label: "Scanning vault...",
+    dirs: 0,
+    files: 0,
+    filesRead: 0,
+    pct: 0,
+  });
 
   // ── FS + dirs walk ────────────────────────────────────────────────
   const fsCache = {};
@@ -340,21 +422,33 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
   // Shared budget for the entire build. Threaded into all walkDir calls
   // (top-level + recursive). Only enforced on full builds (the partial
   // .obsidian-only build is small and capped by the per-file limit).
-  const budget = full ? {
-    remaining: currentLimits.maxTotalBytes,
-    capped: false,
-  } : null;
+  const budget = full
+    ? {
+        remaining: currentLimits.maxTotalBytes,
+        capped: false,
+      }
+    : null;
 
   // Always: walk .obsidian/ fully (plugins, themes, snippets…).
-  const obsidianDir = path.join(vaultRoot, '.obsidian');
-  try { await walkDir(obsidianDir, vaultRoot, fsCache, dirsCache, true, progress, budget); } catch (_) {}
+  const obsidianDir = path.join(vaultRoot, ".obsidian");
+  try {
+    await walkDir(
+      obsidianDir,
+      vaultRoot,
+      fsCache,
+      dirsCache,
+      true,
+      progress,
+      budget,
+    );
+  } catch {}
 
   // Vault root listing.
   try {
     const rootEntries = await fsp.readdir(vaultRoot, { withFileTypes: true });
     const rootStats = await Promise.all(
       rootEntries
-        .filter(e => !e.name.startsWith('.'))
+        .filter((e) => !e.name.startsWith("."))
         .map(async (e) => {
           try {
             const s = await fsp.stat(path.join(vaultRoot, e.name));
@@ -366,7 +460,7 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
               mtime: s.mtime.getTime(),
               size: s.size,
             };
-          } catch (_) {
+          } catch {
             return {
               name: e.name,
               isFile: e.isFile(),
@@ -378,8 +472,8 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
           }
         }),
     );
-    dirsCache[''] = rootStats.filter(Boolean);
-  } catch (_) {}
+    dirsCache[""] = rootStats.filter(Boolean);
+  } catch {}
 
   // If full=1: walk the entire vault (non-hidden) using the same walkDir helper
   // used for .obsidian/ above. walkDir builds both fsCache and dirsCache
@@ -387,23 +481,39 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
   // (dirsCache['']) built above will be overwritten with identical data —
   // that's fine; we avoid duplicating the walk logic.
   if (full) {
-    setProgress(vaultId, { state: 'scanning', label: 'Scanning vault (full)...' });
-    await walkDir(vaultRoot, vaultRoot, fsCache, dirsCache, false, progress, budget);
+    setProgress(vaultId, {
+      state: "scanning",
+      label: "Scanning vault (full)...",
+    });
+    await walkDir(
+      vaultRoot,
+      vaultRoot,
+      fsCache,
+      dirsCache,
+      false,
+      progress,
+      budget,
+    );
   }
 
-  setProgress(vaultId, { state: 'reading', label: 'Reading files...', pct: 80 });
+  setProgress(vaultId, {
+    state: "reading",
+    label: "Reading files...",
+    pct: 80,
+  });
   const fileCount = Object.keys(fsCache).length;
   const dirCount = Object.keys(dirsCache).length;
-  const withContent = Object.values(fsCache).filter(v => v.content !== undefined).length;
+  const withContent = Object.values(fsCache).filter(
+    (v) => v.content !== undefined,
+  ).length;
   const byteCount = Object.values(fsCache)
-    .filter(v => v.content)
+    .filter((v) => v.content)
     .reduce((s, v) => s + v.size, 0);
 
   const response = { electron: electronValues, fs: fsCache, dirs: dirsCache };
-  if (budget && budget.capped) {
+  if (budget?.capped) {
     response.capped = true;
-    response.cappedReason =
-      `total size limit reached (${currentLimits.maxTotalBytes / (1024 * 1024)} MB)`;
+    response.cappedReason = `total size limit reached (${currentLimits.maxTotalBytes / (1024 * 1024)} MB)`;
   }
 
   // Snapshot directory mtimes for future invalidation checks.
@@ -411,7 +521,7 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
   await Promise.all(
     Object.keys(dirsCache).map(async (relDir) => {
       const absDir = relDir
-        ? path.join(vaultRoot, relDir.split('/').join(path.sep))
+        ? path.join(vaultRoot, relDir.split("/").join(path.sep))
         : vaultRoot;
       try {
         const s = await fsp.stat(absDir);
@@ -424,22 +534,28 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
 
   // Pre-compress once. Subsequent HIT requests send the buffer directly,
   // skipping JSON.stringify + zlib (~800ms → <5ms).
-  setProgress(vaultId, { state: 'compressing', label: 'Compressing...', pct: 90 });
+  setProgress(vaultId, {
+    state: "compressing",
+    label: "Compressing...",
+    pct: 90,
+  });
   const jsonBuf = Buffer.from(JSON.stringify(response));
   let compressed = {};
-  try { compressed = await preCompress(jsonBuf); } catch (_) {}
+  try {
+    compressed = await preCompress(jsonBuf);
+  } catch (_) {}
 
   const entry = { response, dirMtimes, compressed, isFull: full };
   if (vaultId) serverCache.set(vaultId, entry);
-  setProgress(vaultId, { state: 'ready', label: 'Ready', pct: 100 });
+  setProgress(vaultId, { state: "ready", label: "Ready", pct: 100 });
   // Clean up progress after a short delay so late pollers see "ready".
   setTimeout(() => buildProgress.delete(vaultId), 5000);
 
   const ms = Date.now() - t0;
   console.log(
     `[bootstrap] vault=${vaultId.slice(0, 8)}… full=${full} ` +
-    `files=${fileCount}(content:${withContent}) dirs=${dirCount} ` +
-    `size=${(byteCount / 1024).toFixed(0)}KB time=${ms}ms`,
+      `files=${fileCount}(content:${withContent}) dirs=${dirCount} ` +
+      `size=${(byteCount / 1024).toFixed(0)}KB time=${ms}ms`,
   );
 
   return entry;
@@ -447,7 +563,11 @@ async function _buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full = false)
 
 // ── router ────────────────────────────────────────────────────────────────────
 
-function createBootstrapRouter(vaultRegistry, fallbackVaultRoot, bootstrapConfig) {
+function createBootstrapRouter(
+  vaultRegistry,
+  fallbackVaultRoot,
+  bootstrapConfig,
+) {
   // Default to the global config's bootstrap block when not provided
   // (production startServer path). Tests pass an explicit override.
   const bootCfg = bootstrapConfig || config.bootstrap;
@@ -455,7 +575,7 @@ function createBootstrapRouter(vaultRegistry, fallbackVaultRoot, bootstrapConfig
   if (!bootCfg.enabled) {
     // Clear any stale entries from a previous (non-disabled) session so
     // they can't leak into the disabled responses.
-    console.log('[bootstrap] DISABLED via BOOTSTRAP_DISABLED env or override');
+    console.log("[bootstrap] DISABLED via BOOTSTRAP_DISABLED env or override");
     serverCache.clear();
     buildProgress.clear();
     pendingBuilds.clear();
@@ -469,18 +589,18 @@ function createBootstrapRouter(vaultRegistry, fallbackVaultRoot, bootstrapConfig
   const router = express.Router();
 
   // Lightweight status endpoint for progress polling.
-  router.get('/status', (req, res) => {
-    const vaultId = req.query.vault || '';
+  router.get("/status", (req, res) => {
+    const vaultId = req.query.vault || "";
     const progress = buildProgress.get(vaultId);
     if (!progress) {
-      return res.json({ state: 'idle', label: '' });
+      return res.json({ state: "idle", label: "" });
     }
     res.json(progress);
   });
 
-  router.get('/', async (req, res) => {
-    const vaultId = req.query.vault || '';
-    const full = req.query.full === '1';
+  router.get("/", async (req, res) => {
+    const vaultId = req.query.vault || "";
+    const full = req.query.full === "1";
 
     // ── Disable path ────────────────────────────────────────────────────
     // When bootstrap is disabled by env/config, return a minimal payload
@@ -502,9 +622,12 @@ function createBootstrapRouter(vaultRegistry, fallbackVaultRoot, bootstrapConfig
     const existing = serverCache.get(vaultId);
     let entry;
     if (full && existing && !existing.isFull) {
-      console.log(`[bootstrap] vault=${vaultId.slice(0, 8)}… serving partial while full build runs in background`);
-      buildCacheEntry(vaultId, vaultRoot, vaultRegistry, true)
-        .catch((err) => console.warn('[bootstrap] background full build error:', err.message));
+      console.log(
+        `[bootstrap] vault=${vaultId.slice(0, 8)}… serving partial while full build runs in background`,
+      );
+      buildCacheEntry(vaultId, vaultRoot, vaultRegistry, true).catch((err) =>
+        console.warn("[bootstrap] background full build error:", err.message),
+      );
       entry = existing;
     } else {
       entry = await buildCacheEntry(vaultId, vaultRoot, vaultRegistry, full);
@@ -514,20 +637,23 @@ function createBootstrapRouter(vaultRegistry, fallbackVaultRoot, bootstrapConfig
     // re-serialisation. Setting Content-Encoding before res.end() causes
     // the compression middleware to skip this response (shouldTransform = false).
     const { compressed } = entry;
-    const ae = req.headers['accept-encoding'] || '';
+    const ae = req.headers["accept-encoding"] || "";
     let buf, encoding;
-    if (ae.includes('br') && compressed.br) {
+    if (ae.includes("br") && compressed.br) {
       buf = compressed.br;
-      encoding = 'br';
-    } else if ((ae.includes('gzip') || ae.includes('deflate')) && compressed.gz) {
+      encoding = "br";
+    } else if (
+      (ae.includes("gzip") || ae.includes("deflate")) &&
+      compressed.gz
+    ) {
       buf = compressed.gz;
-      encoding = 'gzip';
+      encoding = "gzip";
     }
 
     if (buf) {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Content-Encoding', encoding);
-      res.setHeader('Content-Length', buf.length);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Content-Encoding", encoding);
+      res.setHeader("Content-Length", buf.length);
       return res.status(200).end(buf);
     }
     // Fallback: client doesn't accept any compression (very rare).
@@ -544,7 +670,11 @@ function createBootstrapRouter(vaultRegistry, fallbackVaultRoot, bootstrapConfig
  * If bootstrap is disabled (config.bootstrap.enabled === false), this is a
  * no-op — we avoid the precompute entirely.
  */
-async function warmUpBootstrapCache(vaultRegistry, fallbackVaultRoot, bootstrapConfig) {
+async function warmUpBootstrapCache(
+  vaultRegistry,
+  fallbackVaultRoot,
+  bootstrapConfig,
+) {
   const bootCfg = bootstrapConfig || config.bootstrap;
   if (!bootCfg.enabled) {
     // Bootstrap disabled — skip the precompute entirely.
@@ -559,9 +689,12 @@ async function warmUpBootstrapCache(vaultRegistry, fallbackVaultRoot, bootstrapC
   if (ids.length === 0 && fallbackVaultRoot) {
     // No registered vaults yet — warm up the fallback vault.
     try {
-      await buildCacheEntry('', fallbackVaultRoot, vaultRegistry, false);
+      await buildCacheEntry("", fallbackVaultRoot, vaultRegistry, false);
     } catch (err) {
-      console.warn('[bootstrap] warm-up failed for fallback vault:', err.message);
+      console.warn(
+        "[bootstrap] warm-up failed for fallback vault:",
+        err.message,
+      );
     }
     return;
   }
@@ -571,8 +704,12 @@ async function warmUpBootstrapCache(vaultRegistry, fallbackVaultRoot, bootstrapC
       // Phase 1: fast partial build so the first request is never a cold MISS.
       await buildCacheEntry(id, vaultPath, vaultRegistry, false);
       // Phase 2: full build in background — replaces the partial entry when done.
-      buildCacheEntry(id, vaultPath, vaultRegistry, true)
-        .catch((err) => console.warn(`[bootstrap] full warm-up failed for vault ${id}:`, err.message));
+      buildCacheEntry(id, vaultPath, vaultRegistry, true).catch((err) =>
+        console.warn(
+          `[bootstrap] full warm-up failed for vault ${id}:`,
+          err.message,
+        ),
+      );
     } catch (err) {
       console.warn(`[bootstrap] warm-up failed for vault ${id}:`, err.message);
     }

@@ -7,10 +7,10 @@
  * All paths are relative to the configured vault root for safety.
  */
 
-const express = require('express');
-const fs = require('fs');
+const express = require("express");
+const fs = require("fs");
 const fsp = fs.promises;
-const path = require('path');
+const path = require("path");
 
 const {
   tryGetSystemFilePath,
@@ -18,20 +18,25 @@ const {
   getSystemPluginDir,
   mergeCommunityList,
   stripCommunityList,
-} = require('../system-plugins');
+} = require("../system-plugins");
 
 // Imported lazily to avoid circular require — bootstrap.js exports serverCache.
 function invalidateBootstrapCache(vaultId) {
   try {
-    const { serverCache } = require('./bootstrap');
+    const { serverCache } = require("./bootstrap");
     if (serverCache) serverCache.delete(vaultId);
-  } catch (_) {}
+  } catch {}
 }
 
 // Async existence check used by the system-plugin overlay so we can give
 // the vault precedence over the repo copy.
 async function fileExists(absPath) {
-  try { await fsp.access(absPath); return true; } catch { return false; }
+  try {
+    await fsp.access(absPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Like fsp.readdir(target, { withFileTypes: true }) but returns [] when
@@ -40,7 +45,7 @@ async function safeReaddir(absPath) {
   try {
     return await fsp.readdir(absPath, { withFileTypes: true });
   } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
+    if (err.code === "ENOENT" || err.code === "ENOTDIR") return [];
     throw err;
   }
 }
@@ -65,7 +70,7 @@ const lastWriteTime = new Map();
 
 function shouldCoalesce(absPath) {
   const last = lastWriteTime.get(absPath);
-  return last && (Date.now() - last) < COALESCE_WINDOW_MS;
+  return last && Date.now() - last < COALESCE_WINDOW_MS;
 }
 
 function scheduleFlush(absPath) {
@@ -77,10 +82,14 @@ function scheduleFlush(absPath) {
     if (!pending) return;
     pendingWrites.delete(absPath);
     try {
-      await fsp.writeFile(absPath, pending.data, pending.encoding ? { encoding: pending.encoding } : undefined);
+      await fsp.writeFile(
+        absPath,
+        pending.data,
+        pending.encoding ? { encoding: pending.encoding } : undefined,
+      );
       lastWriteTime.set(absPath, Date.now());
     } catch (err) {
-      console.error('[write-coalesce] flush failed:', absPath, err.message);
+      console.error("[write-coalesce] flush failed:", absPath, err.message);
     }
   }, COALESCE_WINDOW_MS);
 }
@@ -95,35 +104,50 @@ async function flushAllPending() {
   const entries = [...pendingWrites.entries()];
   pendingWrites.clear();
   if (entries.length === 0) return;
-  console.log('[write-coalesce] flushing', entries.length, 'pending writes...');
+  console.log("[write-coalesce] flushing", entries.length, "pending writes...");
   const FLUSH_TIMEOUT = 10000;
-  const writes = entries.map(([absPath, entry]) => {
+  const writes = entries.map(async ([absPath, entry]) => {
     if (entry.timer) clearTimeout(entry.timer);
-    return fsp.writeFile(absPath, entry.data, entry.encoding ? { encoding: entry.encoding } : undefined)
-      .catch(err => console.error('[write-coalesce] flush failed:', absPath, err.message));
+    try {
+      return await fsp.writeFile(
+        absPath,
+        entry.data,
+        entry.encoding ? { encoding: entry.encoding } : undefined,
+      );
+    } catch (err) {
+      return console.error(
+        "[write-coalesce] flush failed:",
+        absPath,
+        err.message,
+      );
+    }
   });
   await Promise.race([
     Promise.all(writes),
-    new Promise(resolve => setTimeout(() => {
-      console.warn('[write-coalesce] flush timeout — some writes may be lost');
-      resolve();
-    }, FLUSH_TIMEOUT)),
+    new Promise((resolve) =>
+      setTimeout(() => {
+        console.warn(
+          "[write-coalesce] flush timeout — some writes may be lost",
+        );
+        resolve();
+      }, FLUSH_TIMEOUT),
+    ),
   ]);
 }
 
-process.on('SIGTERM', () => flushAllPending().finally(() => process.exit(0)));
-process.on('SIGINT', () => flushAllPending().finally(() => process.exit(0)));
+process.on("SIGTERM", () => flushAllPending().finally(() => process.exit(0)));
+process.on("SIGINT", () => flushAllPending().finally(() => process.exit(0)));
 
 function createFsRouter(vaultRegistry, fallbackVaultRoot) {
   const router = express.Router();
 
   function getVaultRoot(req) {
-    const vaultId = req.query.vault || (req.body && req.body.vault);
+    const vaultId = req.query.vault || req.body?.vault;
     if (vaultId) {
       const vault = vaultRegistry.get(vaultId);
       if (!vault) {
-        const err = new Error('unknown vault: ' + vaultId);
-        err.code = 'ENOVAULT';
+        const err = new Error(`unknown vault: ${vaultId}`);
+        err.code = "ENOVAULT";
         throw err;
       }
       return vault.path;
@@ -133,14 +157,17 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
 
   // Resolve a path relative to the vault root, ensuring it stays inside.
   function resolveSafe(req, relPath) {
-    if (typeof relPath !== 'string') {
-      throw new Error('path must be a string');
+    if (typeof relPath !== "string") {
+      throw new Error("path must be a string");
     }
     const vaultRoot = getVaultRoot(req);
-    const absolute = path.resolve(vaultRoot, '.' + path.sep + relPath);
+    const absolute = path.resolve(vaultRoot, `.${path.sep}${relPath}`);
     const normalizedRoot = path.resolve(vaultRoot);
-    if (absolute !== normalizedRoot && !absolute.startsWith(normalizedRoot + path.sep)) {
-      throw new Error('path escapes vault root: ' + relPath);
+    if (
+      absolute !== normalizedRoot &&
+      !absolute.startsWith(normalizedRoot + path.sep)
+    ) {
+      throw new Error(`path escapes vault root: ${relPath}`);
     }
     return absolute;
   }
@@ -165,12 +192,18 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
     // routine "wrong shape" errors that Obsidian handles via try/catch.
     // We return 404 so the client-side fetch wrapper treats them like
     // any other "not found" without alarming console errors.
-    const status = err.code === 'ENOENT' ? 404
-      : err.code === 'EACCES' ? 403
-      : err.code === 'EISDIR' ? 404
-      : err.code === 'ENOTDIR' ? 404
-      : err.code === 'ENOVAULT' ? 404
-      : 500;
+    const status =
+      err.code === "ENOENT"
+        ? 404
+        : err.code === "EACCES"
+          ? 403
+          : err.code === "EISDIR"
+            ? 404
+            : err.code === "ENOTDIR"
+              ? 404
+              : err.code === "ENOVAULT"
+                ? 404
+                : 500;
     res.status(status).json({
       error: err.message,
       code: err.code || null,
@@ -178,9 +211,10 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
   }
 
   // Stat a single entry.
-  router.get('/stat', async (req, res) => {
-    const relPath = req.query.path || '';
-    const isPluginsDir = relPath === '.obsidian/plugins' || relPath === '.obsidian/plugins/';
+  router.get("/stat", async (req, res) => {
+    const relPath = req.query.path || "";
+    const isPluginsDir =
+      relPath === ".obsidian/plugins" || relPath === ".obsidian/plugins/";
 
     try {
       const target = resolveSafe(req, relPath);
@@ -208,9 +242,11 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
       // Synthesize a directory stat for .obsidian/plugins when the vault
       // doesn't have it yet — otherwise Obsidian's plugin discovery aborts
       // before it ever gets to readdir, and our system plugins stay hidden.
-      if ((err.code === 'ENOENT' || err.code === 'ENOTDIR')
-          && isPluginsDir
-          && getSystemPluginIds().length > 0) {
+      if (
+        (err.code === "ENOENT" || err.code === "ENOTDIR") &&
+        isPluginsDir &&
+        getSystemPluginIds().length > 0
+      ) {
         const now = Date.now();
         return res.json({
           isFile: false,
@@ -229,19 +265,21 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
   });
 
   // List directory contents (with stats so the client can avoid extra round-trips).
-  router.get('/readdir', async (req, res) => {
-    const relPath = req.query.path || '';
-    const isPluginsDir = relPath === '.obsidian/plugins' || relPath === '.obsidian/plugins/';
+  router.get("/readdir", async (req, res) => {
+    const relPath = req.query.path || "";
+    const isPluginsDir =
+      relPath === ".obsidian/plugins" || relPath === ".obsidian/plugins/";
     // Match exactly .obsidian/plugins/<id> (no trailing path); optional trailing slash.
     const inSysDirMatch = relPath.match(/^\.obsidian\/plugins\/([^/]+)\/?$/);
-    const inSysDir = inSysDirMatch && getSystemPluginIds().includes(inSysDirMatch[1]);
+    const inSysDir =
+      inSysDirMatch && getSystemPluginIds().includes(inSysDirMatch[1]);
 
     try {
       const target = resolveSafe(req, relPath);
       // Helpful debug: log the resolved absolute path when readdir is called.
       // Useful for tracking down "readdir on a file" mysteries.
       if (process.env.OW_DEBUG) {
-        console.log('[readdir]', relPath, '->', target);
+        console.log("[readdir]", relPath, "->", target);
       }
 
       // Inside a system plugin dir? If the vault doesn't have its own copy,
@@ -252,43 +290,49 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
         if (vaultEntries.length === 0) {
           const repoDir = getSystemPluginDir(inSysDirMatch[1]);
           const entries = await fsp.readdir(repoDir, { withFileTypes: true });
-          const result = await Promise.all(entries.map(async (entry) => {
-            const child = path.join(repoDir, entry.name);
-            let stats = null;
-            try {
-              const s = await fsp.stat(child);
-              stats = serializeStats(s);
-            } catch (_) { /* ignore */ }
-            return {
-              name: entry.name,
-              isFile: entry.isFile(),
-              isDirectory: entry.isDirectory(),
-              isSymbolicLink: entry.isSymbolicLink(),
-              stats,
-            };
-          }));
+          const result = await Promise.all(
+            entries.map(async (entry) => {
+              const child = path.join(repoDir, entry.name);
+              let stats = null;
+              try {
+                const s = await fsp.stat(child);
+                stats = serializeStats(s);
+              } catch (_) {
+                /* ignore */
+              }
+              return {
+                name: entry.name,
+                isFile: entry.isFile(),
+                isDirectory: entry.isDirectory(),
+                isSymbolicLink: entry.isSymbolicLink(),
+                stats,
+              };
+            }),
+          );
           return res.json(result);
         }
       }
 
       const entries = await fsp.readdir(target, { withFileTypes: true });
-      const result = await Promise.all(entries.map(async (entry) => {
-        const child = path.join(target, entry.name);
-        let stats = null;
-        try {
-          const s = await fsp.stat(child);
-          stats = serializeStats(s);
-        } catch (_) {
-          // Broken symlink or permission issue: still return the name.
-        }
-        return {
-          name: entry.name,
-          isFile: entry.isFile(),
-          isDirectory: entry.isDirectory(),
-          isSymbolicLink: entry.isSymbolicLink(),
-          stats,
-        };
-      }));
+      const result = await Promise.all(
+        entries.map(async (entry) => {
+          const child = path.join(target, entry.name);
+          let stats = null;
+          try {
+            const s = await fsp.stat(child);
+            stats = serializeStats(s);
+          } catch (_) {
+            // Broken symlink or permission issue: still return the name.
+          }
+          return {
+            name: entry.name,
+            isFile: entry.isFile(),
+            isDirectory: entry.isDirectory(),
+            isSymbolicLink: entry.isSymbolicLink(),
+            stats,
+          };
+        }),
+      );
 
       // If listing .obsidian/plugins, merge in system plugin directory entries
       // for ids the vault doesn't already have.
@@ -311,54 +355,65 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
       // Synthesize a listing for .obsidian/plugins when the vault doesn't
       // have that directory yet — Obsidian creates it lazily, but we want
       // our system plugins to show up immediately.
-      if ((err.code === 'ENOENT' || err.code === 'ENOTDIR')
-          && isPluginsDir
-          && getSystemPluginIds().length > 0) {
-        return res.json(getSystemPluginIds().map((id) => ({
-          name: id,
-          isFile: false,
-          isDirectory: true,
-          isSymbolicLink: false,
-          stats: null,
-        })));
+      if (
+        (err.code === "ENOENT" || err.code === "ENOTDIR") &&
+        isPluginsDir &&
+        getSystemPluginIds().length > 0
+      ) {
+        return res.json(
+          getSystemPluginIds().map((id) => ({
+            name: id,
+            isFile: false,
+            isDirectory: true,
+            isSymbolicLink: false,
+            stats: null,
+          })),
+        );
       }
       handleError(res, err);
     }
   });
 
   // Read a file (text or binary depending on ?encoding).
-  router.get('/read', async (req, res) => {
+  router.get("/read", async (req, res) => {
     try {
-      const relPath = req.query.path || '';
+      const relPath = req.query.path || "";
       const target = resolveSafe(req, relPath);
       const encoding = req.query.encoding || null;
 
       // Special case: community-plugins.json — merge system ids into the
       // list Obsidian sees, regardless of whether the vault file exists.
-      if (relPath === '.obsidian/community-plugins.json') {
+      if (relPath === ".obsidian/community-plugins.json") {
         let list = [];
         const pending = getPendingContent(target);
         if (pending) {
           // Pending write — parse the buffered content.
           try {
-            const txt = typeof pending.data === 'string' ? pending.data : pending.data.toString('utf8');
+            const txt =
+              typeof pending.data === "string"
+                ? pending.data
+                : pending.data.toString("utf8");
             const parsed = JSON.parse(txt);
             if (Array.isArray(parsed)) list = parsed;
-          } catch (_) { /* malformed: start from empty */ }
+          } catch (_) {
+            /* malformed: start from empty */
+          }
         } else {
           try {
-            const txt = await fsp.readFile(target, 'utf8');
+            const txt = await fsp.readFile(target, "utf8");
             const parsed = JSON.parse(txt);
             if (Array.isArray(parsed)) list = parsed;
           } catch (err) {
-            if (err.code !== 'ENOENT') throw err;
+            if (err.code !== "ENOENT") throw err;
           }
         }
         const merged = mergeCommunityList(list);
         if (encoding) {
-          return res.type('text/plain; charset=utf-8').send(JSON.stringify(merged));
+          return res
+            .type("text/plain; charset=utf-8")
+            .send(JSON.stringify(merged));
         }
-        return res.type('application/json').send(JSON.stringify(merged));
+        return res.type("application/json").send(JSON.stringify(merged));
       }
 
       // System plugin overlay: if this is a system plugin file AND the
@@ -369,10 +424,10 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
         if (!vaultHas) {
           if (encoding) {
             const data = await fsp.readFile(systemPath, encoding);
-            return res.type('text/plain; charset=utf-8').send(data);
+            return res.type("text/plain; charset=utf-8").send(data);
           }
           const data = await fsp.readFile(systemPath);
-          return res.type('application/octet-stream').send(data);
+          return res.type("application/octet-stream").send(data);
         }
       }
 
@@ -380,18 +435,24 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
       const pending = getPendingContent(target);
       if (pending) {
         if (encoding) {
-          res.type('text/plain; charset=utf-8').send(typeof pending.data === 'string' ? pending.data : pending.data.toString(encoding));
+          res
+            .type("text/plain; charset=utf-8")
+            .send(
+              typeof pending.data === "string"
+                ? pending.data
+                : pending.data.toString(encoding),
+            );
         } else {
-          res.type('application/octet-stream').send(pending.data);
+          res.type("application/octet-stream").send(pending.data);
         }
         return;
       }
       if (encoding) {
         const data = await fsp.readFile(target, encoding);
-        res.type('text/plain; charset=utf-8').send(data);
+        res.type("text/plain; charset=utf-8").send(data);
       } else {
         const data = await fsp.readFile(target);
-        res.type('application/octet-stream').send(data);
+        res.type("application/octet-stream").send(data);
       }
     } catch (err) {
       handleError(res, err);
@@ -400,49 +461,60 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
 
   // Write a file. Body is the raw content (text or binary).
   // ?encoding=utf8 means the server treats body as utf-8 text.
-  router.put('/write', express.raw({ type: '*/*', limit: '256mb' }), async (req, res) => {
-    try {
-      const relPath = req.query.path || '';
-      const target = resolveSafe(req, relPath);
-      const encoding = req.query.encoding || null;
-      let data = encoding ? req.body.toString(encoding) : req.body;
+  router.put(
+    "/write",
+    express.raw({ type: "*/*", limit: "256mb" }),
+    async (req, res) => {
+      try {
+        const relPath = req.query.path || "";
+        const target = resolveSafe(req, relPath);
+        const encoding = req.query.encoding || null;
+        let data = encoding ? req.body.toString(encoding) : req.body;
 
-      // For community-plugins.json: strip our system plugin ids before
-      // writing so we don't pollute the user's vault. Malformed JSON is
-      // passed through untouched.
-      if (relPath === '.obsidian/community-plugins.json' && encoding) {
-        try {
-          const parsed = JSON.parse(data);
-          if (Array.isArray(parsed)) {
-            const cleaned = stripCommunityList(parsed);
-            data = JSON.stringify(cleaned, null, 2);
+        // For community-plugins.json: strip our system plugin ids before
+        // writing so we don't pollute the user's vault. Malformed JSON is
+        // passed through untouched.
+        if (relPath === ".obsidian/community-plugins.json" && encoding) {
+          try {
+            const parsed = JSON.parse(data);
+            if (Array.isArray(parsed)) {
+              const cleaned = stripCommunityList(parsed);
+              data = JSON.stringify(cleaned, null, 2);
+            }
+          } catch (_) {
+            /* malformed JSON: pass through as-is */
           }
-        } catch (_) { /* malformed JSON: pass through as-is */ }
-      }
+        }
 
-      await fsp.mkdir(path.dirname(target), { recursive: true });
+        await fsp.mkdir(path.dirname(target), { recursive: true });
 
-      // If this file was written recently, coalesce instead of hitting disk.
-      if (shouldCoalesce(target)) {
-        pendingWrites.set(target, { data, encoding, timer: null, mtime: Date.now() });
-        scheduleFlush(target);
+        // If this file was written recently, coalesce instead of hitting disk.
+        if (shouldCoalesce(target)) {
+          pendingWrites.set(target, {
+            data,
+            encoding,
+            timer: null,
+            mtime: Date.now(),
+          });
+          scheduleFlush(target);
+          invalidateBootstrapCache(req.query.vault);
+          res.json({ ok: true });
+          return;
+        }
+
+        await fsp.writeFile(target, data, encoding ? { encoding } : undefined);
+        lastWriteTime.set(target, Date.now());
         invalidateBootstrapCache(req.query.vault);
         res.json({ ok: true });
-        return;
+      } catch (err) {
+        handleError(res, err);
       }
+    },
+  );
 
-      await fsp.writeFile(target, data, encoding ? { encoding } : undefined);
-      lastWriteTime.set(target, Date.now());
-      invalidateBootstrapCache(req.query.vault);
-      res.json({ ok: true });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  router.post('/mkdir', express.json(), async (req, res) => {
+  router.post("/mkdir", express.json(), async (req, res) => {
     try {
-      const target = resolveSafe(req, req.body.path || '');
+      const target = resolveSafe(req, req.body.path || "");
       const recursive = req.body.recursive !== false;
       await fsp.mkdir(target, { recursive });
       invalidateBootstrapCache(req.body.vault);
@@ -452,9 +524,9 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
     }
   });
 
-  router.delete('/unlink', async (req, res) => {
+  router.delete("/unlink", async (req, res) => {
     try {
-      const target = resolveSafe(req, req.query.path || '');
+      const target = resolveSafe(req, req.query.path || "");
       await fsp.unlink(target);
       invalidateBootstrapCache(req.query.vault);
       res.json({ ok: true });
@@ -463,10 +535,10 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
     }
   });
 
-  router.delete('/rmdir', async (req, res) => {
+  router.delete("/rmdir", async (req, res) => {
     try {
-      const target = resolveSafe(req, req.query.path || '');
-      const recursive = req.query.recursive === '1';
+      const target = resolveSafe(req, req.query.path || "");
+      const recursive = req.query.recursive === "1";
       if (recursive) {
         await fsp.rm(target, { recursive: true, force: false });
       } else {
@@ -479,10 +551,10 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
     }
   });
 
-  router.post('/rename', express.json(), async (req, res) => {
+  router.post("/rename", express.json(), async (req, res) => {
     try {
-      const oldPath = resolveSafe(req, req.body.oldPath || '');
-      const newPath = resolveSafe(req, req.body.newPath || '');
+      const oldPath = resolveSafe(req, req.body.oldPath || "");
+      const newPath = resolveSafe(req, req.body.newPath || "");
       await fsp.rename(oldPath, newPath);
       invalidateBootstrapCache(req.body.vault);
       res.json({ ok: true });
@@ -491,10 +563,10 @@ function createFsRouter(vaultRegistry, fallbackVaultRoot) {
     }
   });
 
-  router.post('/copy', express.json(), async (req, res) => {
+  router.post("/copy", express.json(), async (req, res) => {
     try {
-      const src = resolveSafe(req, req.body.src || '');
-      const dest = resolveSafe(req, req.body.dest || '');
+      const src = resolveSafe(req, req.body.src || "");
+      const dest = resolveSafe(req, req.body.dest || "");
       await fsp.copyFile(src, dest);
       invalidateBootstrapCache(req.body.vault);
       res.json({ ok: true });

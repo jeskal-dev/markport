@@ -16,20 +16,20 @@
  * to keep in sync.
  */
 
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
 
 const {
   getSystemPluginIds,
   getSystemPluginDir,
   tryGetSystemFilePath,
-} = require('../system-plugins');
+} = require("../system-plugins");
 
 const MIME_BY_EXT = {
-  '.json': 'application/json',
-  '.js': 'application/javascript',
-  '.css': 'text/css',
+  ".json": "application/json",
+  ".js": "application/javascript",
+  ".css": "text/css",
 };
 
 // Which system plugins to auto-seed into OPFS vaults, and whether to enable
@@ -40,9 +40,18 @@ const MIME_BY_EXT = {
 // DISABLED (files land in OPFS but the plugin is not added to the enabled list):
 //   SYSTEM_PLUGINS_SEED='obsidian-web-layout'          (comma list — seeded + enabled)
 //   SYSTEM_PLUGINS_SEED_DISABLED='obsidian-livesync'   (comma list — seeded, NOT enabled)
-function parseList(v) { return (v || '').split(',').map((s) => s.trim()).filter(Boolean); }
-const SEED_ENABLED = new Set(parseList(process.env.SYSTEM_PLUGINS_SEED || 'obsidian-web-layout'));
-const SEED_DISABLED = new Set(parseList(process.env.SYSTEM_PLUGINS_SEED_DISABLED));
+function parseList(v) {
+  return (v || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+const SEED_ENABLED = new Set(
+  parseList(process.env.SYSTEM_PLUGINS_SEED || "obsidian-web-layout"),
+);
+const SEED_DISABLED = new Set(
+  parseList(process.env.SYSTEM_PLUGINS_SEED_DISABLED),
+);
 
 function createSystemPluginFilesRouter() {
   const router = express.Router();
@@ -50,48 +59,55 @@ function createSystemPluginFilesRouter() {
   // Manifest: only the plugins configured for auto-seed (see SEED_ENABLED /
   // SEED_DISABLED above), each with its version, on-disk files, and whether it
   // should be enabled after seeding.
-  router.get('/system-plugins', (req, res) => {
+  router.get("/system-plugins", (req, res) => {
     const plugins = getSystemPluginIds()
       .filter((id) => SEED_ENABLED.has(id) || SEED_DISABLED.has(id))
       .map((id) => {
-      const dir = getSystemPluginDir(id);
-      let version = '0.0.0';
-      try {
-        const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
-        if (manifest && typeof manifest.version === 'string') version = manifest.version;
-      } catch (_) { /* keep fallback version */ }
+        const dir = getSystemPluginDir(id);
+        let version = "0.0.0";
+        try {
+          const manifest = JSON.parse(
+            fs.readFileSync(path.join(dir, "manifest.json"), "utf8"),
+          );
+          if (manifest && typeof manifest.version === "string")
+            version = manifest.version;
+        } catch {
+          /* keep fallback version */
+        }
 
-      let files = [];
-      try {
-        files = fs.readdirSync(dir).filter((name) => {
-          try {
-            return fs.statSync(path.join(dir, name)).isFile();
-          } catch (_) {
-            return false;
-          }
-        });
-      } catch (_) { /* dir vanished mid-request: empty file list */ }
+        let files = [];
+        try {
+          files = fs.readdirSync(dir).filter((name) => {
+            try {
+              return fs.statSync(path.join(dir, name)).isFile();
+            } catch {
+              return false;
+            }
+          });
+        } catch {
+          /* dir vanished mid-request: empty file list */
+        }
 
-      return { id, version, files, enabled: SEED_ENABLED.has(id) };
-    });
+        return { id, version, files, enabled: SEED_ENABLED.has(id) };
+      });
     res.json({ plugins });
   });
 
   // Raw file bytes for one system plugin file.
-  router.get('/system-plugin-file', (req, res) => {
+  router.get("/system-plugin-file", (req, res) => {
     const id = req.query.id;
     const file = req.query.file;
-    if (typeof id !== 'string' || typeof file !== 'string' || !id || !file) {
-      return res.status(400).json({ error: 'id and file query params required' });
+    if (typeof id !== "string" || typeof file !== "string" || !id || !file) {
+      return res
+        .status(400)
+        .json({ error: "id and file query params required" });
     }
 
-    const relPath = '.obsidian/plugins/' + id + '/' + file;
+    const relPath = `.obsidian/plugins/${id}/${file}`;
     const absPath = tryGetSystemFilePath(relPath);
-    if (!absPath) {
-      return res.status(404).json({ error: 'not found' });
-    }
+    if (!absPath) return res.status(404).json({ error: "not found" });
 
-    res.type(MIME_BY_EXT[path.extname(absPath)] || 'application/octet-stream');
+    res.type(MIME_BY_EXT[path.extname(absPath)] || "application/octet-stream");
     res.sendFile(absPath);
   });
 
